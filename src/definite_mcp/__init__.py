@@ -8,20 +8,34 @@ for running SQL and Cube queries.
 
 import os
 import json
+import sys
 from typing import Optional, Dict, Any, List, Union
 from dotenv import load_dotenv
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-load_dotenv()
+# Load .env file if it exists (for local development)
+# When installed via uvx, environment variables are passed via MCP config
+try:
+    load_dotenv()
+except Exception:
+    # Ignore if .env file doesn't exist or can't be loaded
+    pass
 
 mcp = FastMCP("definite-api")
 
 API_KEY = os.getenv("DEFINITE_API_KEY")
 API_BASE_URL = os.getenv("DEFINITE_API_BASE_URL", "https://api.definite.app/v1")
 
+# Debug: Show configuration info
+print(f"Definite MCP Server starting...", file=sys.stderr)
+print(f"API Base URL: {API_BASE_URL}", file=sys.stderr)
+print(f"API Key configured: {'Yes' if API_KEY else 'No'}", file=sys.stderr)
+
 if not API_KEY:
-    raise ValueError("DEFINITE_API_KEY environment variable is required")
+    print("ERROR: DEFINITE_API_KEY environment variable is required", file=sys.stderr)
+    print("Make sure to set DEFINITE_API_KEY in your MCP configuration", file=sys.stderr)
+    sys.exit(1)
 
 
 async def make_api_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -119,6 +133,10 @@ async def run_cube_query(
         }
 
 
-if __name__ == "__main__":
-    import asyncio
+def main():
+    """Entry point for the definite-mcp command"""
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

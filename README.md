@@ -16,24 +16,48 @@ A Model Context Protocol (MCP) server that provides access to the Definite API f
    ```
 
 2. **Set up environment**:
-   Create a `.env` file with your Definite API configuration:
+   Create a `.env` file with your Definite API key:
    ```
    DEFINITE_API_KEY=your_api_key_here
-   DEFINITE_API_BASE_URL=https://staging.api.definite.app/v1
    ```
 
-   **Environment Options:**
-   - For **production**: `DEFINITE_API_BASE_URL=https://api.definite.app/v1` (default)
-   - For **staging**: `DEFINITE_API_BASE_URL=https://staging.api.definite.app/v1`
+   **Optional**: Configure custom API base URL (defaults to production):
+   ```
+   DEFINITE_API_BASE_URL=https://api.definite.app/v1
+   ```
 
 3. **Test the server**:
    ```bash
-   uv run python test_mcp.py
+   uv run python scripts/test_mcp.py
    ```
 
-## Claude Desktop Configuration
+## Installation & Configuration
+
+### Option 1: Install from GitHub (Recommended)
 
 Add this configuration to your Claude Desktop settings (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
+
+```json
+{
+  "mcpServers": {
+    "definite-api": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/definite-app/definite-mcp.git",
+        "definite-mcp"
+      ],
+      "env": {
+        "DEFINITE_API_KEY": "your_api_key_here"
+      }
+    }
+  }
+}
+```
+
+### Option 2: Local Development Setup
+
+For local development, clone the repository and use this configuration:
 
 ```json
 {
@@ -42,7 +66,7 @@ Add this configuration to your Claude Desktop settings (`~/Library/Application S
       "command": "uv",
       "args": [
         "--directory",
-        "/Users/mritchie712/blackbird/def-mcp/definite-mcp",
+        "/path/to/definite-mcp",
         "run",
         "python",
         "definite_mcp.py"
@@ -52,23 +76,26 @@ Add this configuration to your Claude Desktop settings (`~/Library/Application S
 }
 ```
 
+Replace `/path/to/definite-mcp` with the actual path to your cloned repository.
+
 ## Claude Code CLI Configuration
 
 For **Claude Code CLI** users, you can add this MCP server using the command line:
 
-### Method 1: Basic CLI Setup
+### Method 1: Install from GitHub (Recommended)
 ```bash
-# Add the Definite API MCP server
-claude mcp add definite-api -- uv --directory /Users/mritchie712/blackbird/def-mcp/definite-mcp run python definite_mcp.py
-```
-
-### Method 2: With Environment Variables
-```bash
-# Add with explicit environment variables
+# Add directly from GitHub repository
 claude mcp add definite-api \
   --env DEFINITE_API_KEY=your_api_key_here \
-  --env DEFINITE_API_BASE_URL=https://staging.api.definite.app/v1 \
-  -- uv --directory /Users/mritchie712/blackbird/def-mcp/definite-mcp run python definite_mcp.py
+  -- uvx --from git+https://github.com/definite-app/definite-mcp.git definite-mcp
+```
+
+### Method 2: Local Development
+```bash
+# Add from local directory
+claude mcp add definite-api \
+  --env DEFINITE_API_KEY=your_api_key_here \
+  -- uv --directory /path/to/definite-mcp run python definite_mcp.py
 ```
 
 ### Method 3: Different Scopes
@@ -162,15 +189,12 @@ The MCP server supports configurable API base URLs through environment variables
 - `DEFINITE_API_KEY`: Your API key from the Definite dashboard (required)
 - `DEFINITE_API_BASE_URL`: The API base URL (optional, defaults to production)
 
-**Examples:**
+**Example:**
 ```bash
-# Production (default)
+# Custom API endpoint (optional)
 DEFINITE_API_BASE_URL=https://api.definite.app/v1
-
-# Staging
-DEFINITE_API_BASE_URL=https://staging.api.definite.app/v1
 ```
 
 ## Test Results
 
-✅ **Staging API is working!** Both SQL and Cube queries are successfully executing against `https://staging.api.definite.app/v1`.
+✅ **API is working!** Both SQL and Cube queries are successfully executing against the Definite API.

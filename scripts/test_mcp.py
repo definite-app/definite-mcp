@@ -5,6 +5,12 @@ Test script for the Definite MCP server
 
 import asyncio
 import json
+import sys
+import os
+
+# Add the src directory to Python path for local testing
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
 from definite_mcp import run_sql_query, run_cube_query
 
 
