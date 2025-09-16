@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "definite-api": {
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/Users/mritchie712/blackbird/def-mcp/definite-mcp",
+        "run",
+        "python",
+        "definite_mcp.py"
+      ]
+    }
+  }
+}
