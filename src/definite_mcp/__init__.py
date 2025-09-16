@@ -25,7 +25,7 @@ except Exception:
 mcp = FastMCP("definite-api")
 
 API_KEY = os.getenv("DEFINITE_API_KEY")
-API_BASE_URL = os.getenv("DEFINITE_API_BASE_URL", "https://api.definite.app/v1")
+API_BASE_URL = os.getenv("DEFINITE_API_BASE_URL", "https://api.definite.app")
 
 # Debug: Show configuration info
 print(f"Definite MCP Server starting...", file=sys.stderr)
@@ -47,7 +47,7 @@ async def make_api_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, 
 
     async with httpx.AsyncClient() as client:
         response = await client.post(
-            f"{API_BASE_URL}/{endpoint}",
+            f"{API_BASE_URL}/v1/{endpoint}",
             json=payload,
             headers=headers
         )

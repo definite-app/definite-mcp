@@ -23,7 +23,7 @@ A Model Context Protocol (MCP) server that provides access to the Definite API f
 
    **Optional**: Configure custom API base URL (defaults to production):
    ```
-   DEFINITE_API_BASE_URL=https://api.definite.app/v1
+   DEFINITE_API_BASE_URL=https://api.definite.app
    ```
 
 3. **Test the server**:
@@ -84,7 +84,6 @@ For **Claude Code CLI** users, you can add this MCP server using the command lin
 
 ### Method 1: Install from GitHub (Recommended)
 ```bash
-# Add directly from GitHub repository
 claude mcp add definite-api \
   --env DEFINITE_API_KEY=your_api_key_here \
   -- uvx --from git+https://github.com/definite-app/definite-mcp.git definite-mcp
@@ -192,7 +191,7 @@ The MCP server supports configurable API base URLs through environment variables
 **Example:**
 ```bash
 # Custom API endpoint (optional)
-DEFINITE_API_BASE_URL=https://api.definite.app/v1
+DEFINITE_API_BASE_URL=https://api.definite.app
 ```
 
 ## Test Results
