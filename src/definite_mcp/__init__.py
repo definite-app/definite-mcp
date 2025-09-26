@@ -75,7 +75,7 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
         payload["integration_id"] = integration_id
     else:
         # If no integration ID is provided, use the default one from the environment
-        _TABLE_INTEGRATION_ID = os.getenv("DEFINITE_DEFAULT_INTEGRATION_ID")
+        _TABLE_INTEGRATION_ID = os.getenv("_TABLE_INTEGRATION_ID")
         if _TABLE_INTEGRATION_ID:
             payload["integration_id"] = _TABLE_INTEGRATION_ID
 
