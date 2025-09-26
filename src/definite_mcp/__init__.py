@@ -99,7 +99,13 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
                         "error": sql_error if sql_error else f"Query failed with HTTP {e.response.status_code}",
                         "status": "failed",
                         "http_status": e.response.status_code,
-                        "query": sql
+                        "query": sql,
+                        "request_details": {
+                            "url": f"{API_BASE_URL}/v1/query",
+                            "payload": payload,
+                            "api_key_configured": bool(API_KEY),
+                            "timeout": "120 seconds"
+                        }
                     }
                 else:
                     # If message is empty, provide a fallback error message
@@ -108,7 +114,13 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
                         "error": error_msg,
                         "status": "failed",
                         "http_status": e.response.status_code,
-                        "query": sql
+                        "query": sql,
+                        "request_details": {
+                            "url": f"{API_BASE_URL}/v1/query",
+                            "payload": payload,
+                            "api_key_configured": bool(API_KEY),
+                            "timeout": "120 seconds"
+                        }
                     }
         except (json.JSONDecodeError, KeyError):
             pass
@@ -116,7 +128,13 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
         return {
             "error": f"HTTP {e.response.status_code}: {error_detail}",
             "status": "failed",
-            "query": sql
+            "query": sql,
+            "request_details": {
+                "url": f"{API_BASE_URL}/v1/query",
+                "payload": payload,
+                "api_key_configured": bool(API_KEY),
+                "timeout": "120 seconds"
+            }
         }
     except Exception as e:
         error_msg = str(e)
@@ -138,6 +156,14 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
 
         # Add exception type for debugging
         error_response["exception_type"] = f"{e.__class__.__module__}.{e.__class__.__name__}"
+
+        # Add request details for debugging
+        error_response["request_details"] = {
+            "url": f"{API_BASE_URL}/v1/query",
+            "payload": payload,
+            "api_key_configured": bool(API_KEY),
+            "timeout": "120 seconds"
+        }
 
         return error_response
 
@@ -192,7 +218,13 @@ async def run_cube_query(
                         "error": cube_error if cube_error else f"Query failed with HTTP {e.response.status_code}",
                         "status": "failed",
                         "http_status": e.response.status_code,
-                        "cube_query": cube_query
+                        "cube_query": cube_query,
+                        "request_details": {
+                            "url": f"{API_BASE_URL}/v1/query",
+                            "payload": payload,
+                            "api_key_configured": bool(API_KEY),
+                            "timeout": "120 seconds"
+                        }
                     }
                 else:
                     # If message is empty, provide a fallback error message
@@ -201,7 +233,13 @@ async def run_cube_query(
                         "error": error_msg,
                         "status": "failed",
                         "http_status": e.response.status_code,
-                        "cube_query": cube_query
+                        "cube_query": cube_query,
+                        "request_details": {
+                            "url": f"{API_BASE_URL}/v1/query",
+                            "payload": payload,
+                            "api_key_configured": bool(API_KEY),
+                            "timeout": "120 seconds"
+                        }
                     }
         except (json.JSONDecodeError, KeyError):
             pass
@@ -209,7 +247,13 @@ async def run_cube_query(
         return {
             "error": f"HTTP {e.response.status_code}: {error_detail}",
             "status": "failed",
-            "cube_query": cube_query
+            "cube_query": cube_query,
+            "request_details": {
+                "url": f"{API_BASE_URL}/v1/query",
+                "payload": payload,
+                "api_key_configured": bool(API_KEY),
+                "timeout": "120 seconds"
+            }
         }
     except Exception as e:
         error_msg = str(e)
@@ -231,6 +275,14 @@ async def run_cube_query(
 
         # Add exception type for debugging
         error_response["exception_type"] = f"{e.__class__.__module__}.{e.__class__.__name__}"
+
+        # Add request details for debugging
+        error_response["request_details"] = {
+            "url": f"{API_BASE_URL}/v1/query",
+            "payload": payload,
+            "api_key_configured": bool(API_KEY),
+            "timeout": "120 seconds"
+        }
 
         return error_response
 
