@@ -119,8 +119,9 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
             "query": sql
         }
     except Exception as e:
+        error_msg = str(e)
         return {
-            "error": str(e),
+            "error": error_msg if error_msg else "Query failed with unknown error",
             "status": "failed",
             "query": sql
         }
@@ -196,8 +197,9 @@ async def run_cube_query(
             "cube_query": cube_query
         }
     except Exception as e:
+        error_msg = str(e)
         return {
-            "error": str(e),
+            "error": error_msg if error_msg else "Query failed with unknown error",
             "status": "failed",
             "cube_query": cube_query
         }
