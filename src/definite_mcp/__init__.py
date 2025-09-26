@@ -120,11 +120,26 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
         }
     except Exception as e:
         error_msg = str(e)
-        return {
-            "error": error_msg if error_msg else "Query failed with unknown error",
+
+        # If empty message, provide more specific error based on exception type
+        if not error_msg:
+            if e.__class__.__module__ == 'httpx':
+                # Include the exception class name for httpx errors
+                error_msg = f"Query failed with {e.__class__.__name__}"
+            else:
+                error_msg = f"Query failed with {e.__class__.__name__}: unknown error"
+
+        # Build error response with additional context
+        error_response = {
+            "error": error_msg,
             "status": "failed",
             "query": sql
         }
+
+        # Add exception type for debugging
+        error_response["exception_type"] = f"{e.__class__.__module__}.{e.__class__.__name__}"
+
+        return error_response
 
 
 @mcp.tool()
@@ -198,11 +213,26 @@ async def run_cube_query(
         }
     except Exception as e:
         error_msg = str(e)
-        return {
-            "error": error_msg if error_msg else "Query failed with unknown error",
+
+        # If empty message, provide more specific error based on exception type
+        if not error_msg:
+            if e.__class__.__module__ == 'httpx':
+                # Include the exception class name for httpx errors
+                error_msg = f"Query failed with {e.__class__.__name__}"
+            else:
+                error_msg = f"Query failed with {e.__class__.__name__}: unknown error"
+
+        # Build error response with additional context
+        error_response = {
+            "error": error_msg,
             "status": "failed",
             "cube_query": cube_query
         }
+
+        # Add exception type for debugging
+        error_response["exception_type"] = f"{e.__class__.__module__}.{e.__class__.__name__}"
+
+        return error_response
 
 
 def main():
