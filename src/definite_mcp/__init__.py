@@ -96,14 +96,16 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
                     # Extract just the SQL error part
                     sql_error = msg.split("Something went wrong:", 1)[1].strip()
                     return {
-                        "error": sql_error,
+                        "error": sql_error if sql_error else f"Query failed with HTTP {e.response.status_code}",
                         "status": "failed",
                         "http_status": e.response.status_code,
                         "query": sql
                     }
                 else:
+                    # If message is empty, provide a fallback error message
+                    error_msg = msg if msg else f"Query failed with HTTP {e.response.status_code}"
                     return {
-                        "error": msg,
+                        "error": error_msg,
                         "status": "failed",
                         "http_status": e.response.status_code,
                         "query": sql
@@ -171,14 +173,16 @@ async def run_cube_query(
                     # Extract just the error part
                     cube_error = msg.split("Something went wrong:", 1)[1].strip()
                     return {
-                        "error": cube_error,
+                        "error": cube_error if cube_error else f"Query failed with HTTP {e.response.status_code}",
                         "status": "failed",
                         "http_status": e.response.status_code,
                         "cube_query": cube_query
                     }
                 else:
+                    # If message is empty, provide a fallback error message
+                    error_msg = msg if msg else f"Query failed with HTTP {e.response.status_code}"
                     return {
-                        "error": msg,
+                        "error": error_msg,
                         "status": "failed",
                         "http_status": e.response.status_code,
                         "cube_query": cube_query
