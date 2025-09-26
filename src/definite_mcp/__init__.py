@@ -46,7 +46,14 @@ async def make_api_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, 
     }
 
     # Set timeout to 2 minutes (120 seconds) for long-running queries
-    timeout = httpx.Timeout(timeout=120.0)
+    # Explicitly set connect timeout to avoid premature timeouts
+    timeout = httpx.Timeout(
+        timeout=120.0,  # Total timeout
+        connect=30.0,   # Connection timeout (increased from default 5s)
+        read=120.0,     # Read timeout for long-running queries
+        write=30.0,     # Write timeout
+        pool=10.0       # Pool timeout
+    )
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
@@ -104,7 +111,7 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
                             "url": f"{API_BASE_URL}/v1/query",
                             "payload": payload,
                             "api_key_configured": bool(API_KEY),
-                            "timeout": "120 seconds"
+                            "timeout": "connect: 30s, read: 120s, total: 120s"
                         }
                     }
                 else:
@@ -119,7 +126,7 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
                             "url": f"{API_BASE_URL}/v1/query",
                             "payload": payload,
                             "api_key_configured": bool(API_KEY),
-                            "timeout": "120 seconds"
+                            "timeout": "connect: 30s, read: 120s, total: 120s"
                         }
                     }
         except (json.JSONDecodeError, KeyError):
@@ -133,7 +140,7 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
                 "url": f"{API_BASE_URL}/v1/query",
                 "payload": payload,
                 "api_key_configured": bool(API_KEY),
-                "timeout": "120 seconds"
+                "timeout": "connect: 30s, read: 120s, total: 120s"
             }
         }
     except Exception as e:
@@ -162,7 +169,7 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
             "url": f"{API_BASE_URL}/v1/query",
             "payload": payload,
             "api_key_configured": bool(API_KEY),
-            "timeout": "120 seconds"
+            "timeout": "connect: 30s, read: 120s, total: 120s"
         }
 
         return error_response
@@ -223,7 +230,7 @@ async def run_cube_query(
                             "url": f"{API_BASE_URL}/v1/query",
                             "payload": payload,
                             "api_key_configured": bool(API_KEY),
-                            "timeout": "120 seconds"
+                            "timeout": "connect: 30s, read: 120s, total: 120s"
                         }
                     }
                 else:
@@ -238,7 +245,7 @@ async def run_cube_query(
                             "url": f"{API_BASE_URL}/v1/query",
                             "payload": payload,
                             "api_key_configured": bool(API_KEY),
-                            "timeout": "120 seconds"
+                            "timeout": "connect: 30s, read: 120s, total: 120s"
                         }
                     }
         except (json.JSONDecodeError, KeyError):
@@ -252,7 +259,7 @@ async def run_cube_query(
                 "url": f"{API_BASE_URL}/v1/query",
                 "payload": payload,
                 "api_key_configured": bool(API_KEY),
-                "timeout": "120 seconds"
+                "timeout": "connect: 30s, read: 120s, total: 120s"
             }
         }
     except Exception as e:
@@ -281,7 +288,7 @@ async def run_cube_query(
             "url": f"{API_BASE_URL}/v1/query",
             "payload": payload,
             "api_key_configured": bool(API_KEY),
-            "timeout": "120 seconds"
+            "timeout": "connect: 30s, read: 120s, total: 120s"
         }
 
         return error_response
