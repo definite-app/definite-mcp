@@ -25,6 +25,14 @@ async def test_sql_query():
     print(json.dumps(result, indent=2))
     print()
 
+    # Also test with a more complex query
+    print("Testing complex SQL query...")
+    sql2 = "SELECT 'hello' as greeting, 42 as answer"
+    result2 = await run_sql_query(sql2)
+    print(f"Complex SQL Query Result:")
+    print(json.dumps(result2, indent=2))
+    print()
+
 
 async def test_cube_query():
     """Test a Cube query"""

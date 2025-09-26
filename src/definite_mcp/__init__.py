@@ -45,7 +45,10 @@ async def make_api_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, 
         "Content-Type": "application/json"
     }
 
-    async with httpx.AsyncClient() as client:
+    # Set timeout to 2 minutes (120 seconds) for long-running queries
+    timeout = httpx.Timeout(timeout=120.0)
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
             f"{API_BASE_URL}/v1/{endpoint}",
             json=payload,
@@ -70,19 +73,54 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
     payload = {"sql": sql}
     if integration_id:
         payload["integration_id"] = integration_id
+    else:
+        # If no integration ID is provided, use the default one from the environment
+        _TABLE_INTEGRATION_ID = os.getenv("DEFINITE_DEFAULT_INTEGRATION_ID")
+        if _TABLE_INTEGRATION_ID:
+            payload["integration_id"] = _TABLE_INTEGRATION_ID
+
+        
 
     try:
         result = await make_api_request("query", payload)
         return result
     except httpx.HTTPStatusError as e:
+        # Try to extract the actual error message from the response
+        error_detail = e.response.text
+        try:
+            error_json = json.loads(error_detail)
+            if "message" in error_json:
+                # Extract the actual SQL error from nested message
+                msg = error_json["message"]
+                if "Something went wrong:" in msg:
+                    # Extract just the SQL error part
+                    sql_error = msg.split("Something went wrong:", 1)[1].strip()
+                    return {
+                        "error": sql_error,
+                        "status": "failed",
+                        "http_status": e.response.status_code,
+                        "query": sql
+                    }
+                else:
+                    return {
+                        "error": msg,
+                        "status": "failed",
+                        "http_status": e.response.status_code,
+                        "query": sql
+                    }
+        except (json.JSONDecodeError, KeyError):
+            pass
+
         return {
-            "error": f"HTTP {e.response.status_code}: {e.response.text}",
-            "status": "failed"
+            "error": f"HTTP {e.response.status_code}: {error_detail}",
+            "status": "failed",
+            "query": sql
         }
     except Exception as e:
         return {
             "error": str(e),
-            "status": "failed"
+            "status": "failed",
+            "query": sql
         }
 
 
@@ -122,14 +160,42 @@ async def run_cube_query(
         result = await make_api_request("query", payload)
         return result
     except httpx.HTTPStatusError as e:
+        # Try to extract the actual error message from the response
+        error_detail = e.response.text
+        try:
+            error_json = json.loads(error_detail)
+            if "message" in error_json:
+                # Extract the actual error from nested message
+                msg = error_json["message"]
+                if "Something went wrong:" in msg:
+                    # Extract just the error part
+                    cube_error = msg.split("Something went wrong:", 1)[1].strip()
+                    return {
+                        "error": cube_error,
+                        "status": "failed",
+                        "http_status": e.response.status_code,
+                        "cube_query": cube_query
+                    }
+                else:
+                    return {
+                        "error": msg,
+                        "status": "failed",
+                        "http_status": e.response.status_code,
+                        "cube_query": cube_query
+                    }
+        except (json.JSONDecodeError, KeyError):
+            pass
+
         return {
-            "error": f"HTTP {e.response.status_code}: {e.response.text}",
-            "status": "failed"
+            "error": f"HTTP {e.response.status_code}: {error_detail}",
+            "status": "failed",
+            "cube_query": cube_query
         }
     except Exception as e:
         return {
             "error": str(e),
-            "status": "failed"
+            "status": "failed",
+            "cube_query": cube_query
         }
 
 

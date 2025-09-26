@@ -7,7 +7,7 @@ name = "definite-mcp"
 version = "0.1.0"
 description = "Model Context Protocol server for Definite API - enables SQL and Cube queries"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.28.1",
     "mcp>=1.2.0",
