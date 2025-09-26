@@ -24,7 +24,7 @@ async def test_api():
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(
-                "https://api.definite.app/v1/query",
+                "https://staging.api.definite.app/v1/query",
                 json=payload,
                 headers=headers
             )
