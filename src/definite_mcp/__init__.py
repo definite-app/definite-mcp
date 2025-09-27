@@ -9,6 +9,7 @@ for running SQL and Cube queries.
 import os
 import json
 import sys
+import asyncio
 from typing import Optional, Dict, Any, List, Union
 from dotenv import load_dotenv
 import httpx
@@ -39,30 +40,51 @@ if not API_KEY:
 
 
 async def make_api_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Make an authenticated request to the Definite API"""
+    """Make an authenticated request to the Definite API with retry logic"""
     headers = {
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json"
     }
 
-    # Set timeout to 2 minutes (120 seconds) for long-running queries
-    # Explicitly set connect timeout to avoid premature timeouts
-    timeout = httpx.Timeout(
-        timeout=120.0,  # Total timeout
-        connect=30.0,   # Connection timeout (increased from default 5s)
-        read=120.0,     # Read timeout for long-running queries
-        write=30.0,     # Write timeout
-        pool=10.0       # Pool timeout
-    )
+    max_retries = 3
+    url = f"{API_BASE_URL}/v1/{endpoint}"
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(
-            f"{API_BASE_URL}/v1/{endpoint}",
-            json=payload,
-            headers=headers
+    for attempt in range(max_retries):
+        # Use 1 second connect timeout for first attempts, 30 seconds for final attempt
+        connect_timeout = 1.0 if attempt < max_retries - 1 else 30.0
+
+        timeout = httpx.Timeout(
+            timeout=120.0,      # Total timeout
+            connect=connect_timeout,  # Connection timeout (1s for retries, 30s for final)
+            read=120.0,         # Read timeout for long-running queries
+            write=30.0,         # Write timeout
+            pool=10.0           # Pool timeout
         )
-        response.raise_for_status()
-        return response.json()
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(
+                    url,
+                    json=payload,
+                    headers=headers
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.ConnectTimeout as e:
+            # Only retry on connection timeouts, not on other errors
+            if attempt < max_retries - 1:
+                # Exponential backoff: wait 1s, 2s before retrying
+                wait_time = 2 ** attempt  # 1, 2 seconds
+                print(f"Connection timeout after {connect_timeout}s, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})", file=sys.stderr)
+                await asyncio.sleep(wait_time)
+                continue
+            else:
+                # Final attempt failed, re-raise the exception
+                print(f"Connection timeout after {connect_timeout}s on final attempt", file=sys.stderr)
+                raise
+        except Exception:
+            # For any other exception, don't retry, just raise
+            raise
 
 
 @mcp.tool()
@@ -111,7 +133,7 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
                             "url": f"{API_BASE_URL}/v1/query",
                             "payload": payload,
                             "api_key_configured": bool(API_KEY),
-                            "timeout": "connect: 30s, read: 120s, total: 120s"
+                            "timeout": "connect: 1s (with retry), read: 120s, total: 120s"
                         }
                     }
                 else:
@@ -126,7 +148,7 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
                             "url": f"{API_BASE_URL}/v1/query",
                             "payload": payload,
                             "api_key_configured": bool(API_KEY),
-                            "timeout": "connect: 30s, read: 120s, total: 120s"
+                            "timeout": "connect: 1s (with retry), read: 120s, total: 120s"
                         }
                     }
         except (json.JSONDecodeError, KeyError):
@@ -230,7 +252,7 @@ async def run_cube_query(
                             "url": f"{API_BASE_URL}/v1/query",
                             "payload": payload,
                             "api_key_configured": bool(API_KEY),
-                            "timeout": "connect: 30s, read: 120s, total: 120s"
+                            "timeout": "connect: 1s (with retry), read: 120s, total: 120s"
                         }
                     }
                 else:
@@ -245,7 +267,7 @@ async def run_cube_query(
                             "url": f"{API_BASE_URL}/v1/query",
                             "payload": payload,
                             "api_key_configured": bool(API_KEY),
-                            "timeout": "connect: 30s, read: 120s, total: 120s"
+                            "timeout": "connect: 1s (with retry), read: 120s, total: 120s"
                         }
                     }
         except (json.JSONDecodeError, KeyError):
