@@ -2,155 +2,267 @@
 """
 Definite API MCP Server
 
-A Model Context Protocol server that provides access to Definite API
+A Model Context Protocol server that provides access to the Definite API
 for running SQL and Cube queries.
+
+Key client transport changes vs. the original:
+- Single shared httpx.AsyncClient (connection reuse; avoids pool thrash)
+- trust_env=False (ignore env proxies that can stall)
+- http2=False (avoid ALPN/HTTP2 stalls)
+- Fast connect timeout + per-attempt overall deadline + retries
+- Better diagnostics: X-Request-Id, custom User-Agent, phase tagging, DNS log
 """
 
 import os
-import json
 import sys
+import json
+import uuid
+import time
+import socket
 import asyncio
-from typing import Optional, Dict, Any, List, Union
+import logging
+from typing import Optional, Dict, Any
 from dotenv import load_dotenv
 import httpx
 from mcp.server.fastmcp import FastMCP
 
-# Load .env file if it exists (for local development)
-# When installed via uvx, environment variables are passed via MCP config
+# -------------------------
+# Environment / logging
+# -------------------------
+
+# Load .env for local dev; MCP config envs will override
 try:
     load_dotenv()
 except Exception:
-    # Ignore if .env file doesn't exist or can't be loaded
     pass
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(stream=sys.stderr, level=LOG_LEVEL)
+log = logging.getLogger("definite-mcp")
 
 mcp = FastMCP("definite-api")
 
 API_KEY = os.getenv("DEFINITE_API_KEY")
-API_BASE_URL = os.getenv("DEFINITE_API_BASE_URL", "https://api.definite.app")
+API_BASE_URL = os.getenv("DEFINITE_API_BASE_URL", "https://api.definite.app").rstrip("/")
 
-# Debug: Show configuration info
-print(f"Definite MCP Server starting...", file=sys.stderr)
+print("Definite MCP Server starting...", file=sys.stderr)
 print(f"API Base URL: {API_BASE_URL}", file=sys.stderr)
-print(f"API Key configured: {'Yes' if API_KEY else 'No'}", file=sys.stderr)
+print(f"API Key configured: {'Yes' if bool(API_KEY) else 'No'}", file=sys.stderr)
 
 if not API_KEY:
     print("ERROR: DEFINITE_API_KEY environment variable is required", file=sys.stderr)
     print("Make sure to set DEFINITE_API_KEY in your MCP configuration", file=sys.stderr)
     sys.exit(1)
 
+# -------------------------
+# HTTP client config
+# -------------------------
+
+# Fast connect to detect bad routes quickly;
+# generous read for long-running queries; short pool to avoid head-of-line waits.
+CONNECT_TIMEOUT_S = float(os.getenv("DEFINITE_CONNECT_TIMEOUT_S", "2.0"))
+READ_TIMEOUT_S = float(os.getenv("DEFINITE_READ_TIMEOUT_S", "120.0"))
+WRITE_TIMEOUT_S = float(os.getenv("DEFINITE_WRITE_TIMEOUT_S", "10.0"))
+POOL_TIMEOUT_S = float(os.getenv("DEFINITE_POOL_TIMEOUT_S", "2.0"))
+
+# Overall per-attempt deadline (connect + TLS + write + first-byte)
+ATTEMPT_DEADLINE_S = float(os.getenv("DEFINITE_ATTEMPT_DEADLINE_S", "15.0"))
+
+# Retry policy
+RETRIES = int(os.getenv("DEFINITE_RETRIES", "4"))
+BACKOFF_BASE_S = float(os.getenv("DEFINITE_BACKOFF_BASE_S", "0.5"))
+
+# Client concurrency limits
+LIMITS = httpx.Limits(
+    max_connections=int(os.getenv("DEFINITE_MAX_CONNECTIONS", "50")),
+    max_keepalive_connections=int(os.getenv("DEFINITE_MAX_KEEPALIVE", "20")),
+)
+
+TIMEOUT = httpx.Timeout(
+    connect=CONNECT_TIMEOUT_S,
+    read=READ_TIMEOUT_S,
+    write=WRITE_TIMEOUT_S,
+    pool=POOL_TIMEOUT_S,
+)
+
+# One shared client for the process
+_HTTP = httpx.AsyncClient(
+    base_url=API_BASE_URL,
+    timeout=TIMEOUT,
+    limits=LIMITS,
+    trust_env=False,          # ignore HTTP(S)_PROXY / NO_PROXY surprises
+    http2=False,              # avoid ALPN/HTTP2 stalls on some edges/proxies
+    follow_redirects=True,
+)
+
+def _timeout_string() -> str:
+    return (
+        f"connect: {CONNECT_TIMEOUT_S:.0f}s, read: {READ_TIMEOUT_S:.0f}s, "
+        f"write: {WRITE_TIMEOUT_S:.0f}s, pool: {POOL_TIMEOUT_S:.0f}s, "
+        f"attempt_deadline: {ATTEMPT_DEADLINE_S:.0f}s, retries: {RETRIES}, "
+        f"http2: false, trust_env: false"
+    )
+
+# -------------------------
+# Diagnostics helpers
+# -------------------------
+
+def _resolve_dns_once(host: str) -> None:
+    """Log DNS resolution results for visibility."""
+    try:
+        addrs = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+        uniq = sorted({f"{fam}/{socktype}/{proto}@{addr[0]}" for fam, socktype, proto, _, addr in addrs})
+        log.info("DNS %s -> %s", host, uniq)
+    except Exception as e:
+        log.debug("DNS resolution failed for %s: %s", host, e)
+
+_DNS_LOGGED = False
+
+async def _preflight_health() -> None:
+    """
+    Optional preflight to validate the network path. 404 is fine (no route),
+    we only care about reachability and fast response.
+    """
+    try:
+        r = await asyncio.wait_for(
+            _HTTP.head("/v1/healthz", headers={"User-Agent": "definite-mcp/health"}),
+            timeout=5.0,
+        )
+        log.info("Preflight /v1/healthz status=%s", r.status_code)
+    except Exception as e:
+        # Non-fatal: this is a hint if the path is broken
+        log.warning("Preflight /v1/healthz failed: %s", e)
+
+async def _post_with_retries(path: str, json_body: Dict[str, Any], headers: Dict[str, str]) -> httpx.Response:
+    """
+    POST with fast connect, per-attempt deadline, exponential backoff retries.
+    """
+    attempt = 0
+    backoff = BACKOFF_BASE_S
+    while True:
+        attempt += 1
+        try:
+            log.info("[%s] POST %s attempt %d/%d", headers.get("X-Request-Id"), path, attempt, RETRIES)
+            # Per-attempt overall deadline (connect+TLS+write+first-byte)
+            resp = await asyncio.wait_for(
+                _HTTP.post(path, json=json_body, headers=headers),
+                timeout=ATTEMPT_DEADLINE_S,
+            )
+            resp.raise_for_status()
+            return resp
+        except (httpx.ConnectTimeout, httpx.ConnectError,
+                httpx.ReadTimeout, httpx.RemoteProtocolError,
+                httpx.PoolTimeout, asyncio.TimeoutError) as e:
+            log.warning("[%s] attempt %d/%d %s: %s",
+                        headers.get("X-Request-Id"), attempt, RETRIES, e.__class__.__name__, e)
+            if attempt >= RETRIES:
+                raise
+            await asyncio.sleep(backoff)
+            backoff *= 2.0
 
 async def make_api_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Make an authenticated request to the Definite API with retry logic"""
+    """
+    Make an authenticated request to the Definite API with robust connect handling.
+    """
+    rid = str(uuid.uuid4())
     headers = {
         "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "User-Agent": "definite-mcp/0.2",
+        "X-Request-Id": rid,
     }
 
-    max_retries = 3
-    url = f"{API_BASE_URL}/v1/{endpoint}"
-
-    for attempt in range(max_retries):
-        # Use 1 second connect timeout for first attempts, 30 seconds for final attempt
-        connect_timeout = 1.0 if attempt < max_retries - 1 else 30.0
-
-        timeout = httpx.Timeout(
-            timeout=120.0,      # Total timeout
-            connect=connect_timeout,  # Connection timeout (1s for retries, 30s for final)
-            read=120.0,         # Read timeout for long-running queries
-            write=30.0,         # Write timeout
-            pool=10.0           # Pool timeout
-        )
-
+    # One-time DNS visibility
+    global _DNS_LOGGED
+    if not _DNS_LOGGED:
+        _DNS_LOGGED = True
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.post(
-                    url,
-                    json=payload,
-                    headers=headers
-                )
-                response.raise_for_status()
-                return response.json()
-        except httpx.ConnectTimeout as e:
-            # Only retry on connection timeouts, not on other errors
-            if attempt < max_retries - 1:
-                # Exponential backoff: wait 1s, 2s before retrying
-                wait_time = 2 ** attempt  # 1, 2 seconds
-                print(f"Connection timeout after {connect_timeout}s, retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})", file=sys.stderr)
-                await asyncio.sleep(wait_time)
-                continue
-            else:
-                # Final attempt failed, re-raise the exception
-                print(f"Connection timeout after {connect_timeout}s on final attempt", file=sys.stderr)
-                raise
+            host = API_BASE_URL.split("://", 1)[1].split("/", 1)[0]
+            _resolve_dns_once(host)
         except Exception:
-            # For any other exception, don't retry, just raise
-            raise
+            pass
 
+    # Optional preflight (does not fail the main call)
+    await _preflight_health()
+
+    path = f"/v1/{endpoint.lstrip('/')}"
+    t0 = time.monotonic()
+    try:
+        resp = await _post_with_retries(path, payload, headers)
+        log.info("[%s] OK %s %s in %.0fms", rid, resp.status_code, path, (time.monotonic() - t0) * 1000)
+        return resp.json()
+    except Exception as e:
+        # Re-raise; callers convert into structured error payloads
+        log.error("[%s] POST %s failed after %.0fms: %s",
+                  rid, path, (time.monotonic() - t0) * 1000, repr(e))
+        raise
+
+# -------------------------
+# Error helpers
+# -------------------------
+
+def _phase_for_exception(exc: Exception) -> str:
+    if isinstance(exc, httpx.ConnectTimeout):
+        return "connect_timeout"
+    if isinstance(exc, httpx.ReadTimeout):
+        return "read_timeout"
+    if isinstance(exc, httpx.PoolTimeout):
+        return "pool_timeout"
+    if isinstance(exc, asyncio.TimeoutError):
+        return "attempt_deadline_timeout"
+    if isinstance(exc, httpx.ConnectError):
+        return "connect_error"
+    if isinstance(exc, httpx.RemoteProtocolError):
+        return "protocol_error"
+    return exc.__class__.__name__
+
+def _common_request_details(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "url": f"{API_BASE_URL}/v1/{endpoint}",
+        "payload": payload,
+        "api_key_configured": bool(API_KEY),
+        "timeouts": _timeout_string(),
+    }
+
+# -------------------------
+# MCP tools
+# -------------------------
 
 @mcp.tool()
 async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Execute a SQL query on a Definite database integration.
-
-    Args:
-        sql: The SQL query to execute
-        integration_id: Optional integration ID. If not provided, uses the default integration
-
-    Returns:
-        The query results as returned by the Definite API
     """
-    payload = {"sql": sql}
+    payload: Dict[str, Any] = {"sql": sql}
     if integration_id:
         payload["integration_id"] = integration_id
     else:
-        # If no integration ID is provided, use the default one from the environment
+        # Fallback default integration id from env if present
         _TABLE_INTEGRATION_ID = os.getenv("_TABLE_INTEGRATION_ID")
         if _TABLE_INTEGRATION_ID:
             payload["integration_id"] = _TABLE_INTEGRATION_ID
 
-        
-
     try:
         result = await make_api_request("query", payload)
         return result
+
     except httpx.HTTPStatusError as e:
-        # Try to extract the actual error message from the response
+        # Server responded with non-2xx
         error_detail = e.response.text
+        # Try to extract nested "message" and trim "Something went wrong:"
         try:
             error_json = json.loads(error_detail)
-            if "message" in error_json:
-                # Extract the actual SQL error from nested message
-                msg = error_json["message"]
+            msg = error_json.get("message", "")
+            if msg:
                 if "Something went wrong:" in msg:
-                    # Extract just the SQL error part
-                    sql_error = msg.split("Something went wrong:", 1)[1].strip()
-                    return {
-                        "error": sql_error if sql_error else f"Query failed with HTTP {e.response.status_code}",
-                        "status": "failed",
-                        "http_status": e.response.status_code,
-                        "query": sql,
-                        "request_details": {
-                            "url": f"{API_BASE_URL}/v1/query",
-                            "payload": payload,
-                            "api_key_configured": bool(API_KEY),
-                            "timeout": "connect: 1s (with retry), read: 120s, total: 120s"
-                        }
-                    }
-                else:
-                    # If message is empty, provide a fallback error message
-                    error_msg = msg if msg else f"Query failed with HTTP {e.response.status_code}"
-                    return {
-                        "error": error_msg,
-                        "status": "failed",
-                        "http_status": e.response.status_code,
-                        "query": sql,
-                        "request_details": {
-                            "url": f"{API_BASE_URL}/v1/query",
-                            "payload": payload,
-                            "api_key_configured": bool(API_KEY),
-                            "timeout": "connect: 1s (with retry), read: 120s, total: 120s"
-                        }
-                    }
+                    msg = msg.split("Something went wrong:", 1)[1].strip() or msg
+                return {
+                    "error": msg,
+                    "status": "failed",
+                    "http_status": e.response.status_code,
+                    "query": sql,
+                    "request_details": _common_request_details("query", payload),
+                }
         except (json.JSONDecodeError, KeyError):
             pass
 
@@ -158,43 +270,23 @@ async def run_sql_query(sql: str, integration_id: Optional[str] = None) -> Dict[
             "error": f"HTTP {e.response.status_code}: {error_detail}",
             "status": "failed",
             "query": sql,
-            "request_details": {
-                "url": f"{API_BASE_URL}/v1/query",
-                "payload": payload,
-                "api_key_configured": bool(API_KEY),
-                "timeout": "connect: 30s, read: 120s, total: 120s"
-            }
+            "request_details": _common_request_details("query", payload),
         }
+
     except Exception as e:
-        error_msg = str(e)
-
-        # If empty message, provide more specific error based on exception type
-        if not error_msg:
-            if e.__class__.__module__ == 'httpx':
-                # Include the exception class name for httpx errors
-                error_msg = f"Query failed with {e.__class__.__name__}"
-            else:
-                error_msg = f"Query failed with {e.__class__.__name__}: unknown error"
-
-        # Build error response with additional context
-        error_response = {
-            "error": error_msg,
+        # Transport or attempt-deadline errors
+        phase = _phase_for_exception(e)
+        msg = str(e) or f"Query failed with {e.__class__.__name__}"
+        return {
+            "error": msg,
             "status": "failed",
-            "query": sql
+            "query": sql,
+            "exception_type": f"{e.__class__.__module__}.{e.__class__.__name__}",
+            "request_details": {
+                **_common_request_details("query", payload),
+                "phase": phase,
+            },
         }
-
-        # Add exception type for debugging
-        error_response["exception_type"] = f"{e.__class__.__module__}.{e.__class__.__name__}"
-
-        # Add request details for debugging
-        error_response["request_details"] = {
-            "url": f"{API_BASE_URL}/v1/query",
-            "payload": payload,
-            "api_key_configured": bool(API_KEY),
-            "timeout": "connect: 30s, read: 120s, total: 120s"
-        }
-
-        return error_response
 
 
 @mcp.tool()
@@ -204,72 +296,30 @@ async def run_cube_query(
 ) -> Dict[str, Any]:
     """
     Execute a Cube query on a Definite Cube integration.
-
-    Args:
-        cube_query: The Cube query in JSON format with dimensions, filters, measures, etc.
-        integration_id: Optional integration ID. If not provided, uses the default integration
-
-    Returns:
-        The query results as returned by the Definite API
-
-    Example cube_query:
-    {
-        "dimensions": [],
-        "filters": [],
-        "measures": ["hubspot_deals.win_rate"],
-        "timeDimensions": [{
-            "dimension": "hubspot_deals.close_date",
-            "granularity": "month"
-        }],
-        "order": [],
-        "limit": 2000
-    }
     """
-    payload = {"cube_query": cube_query}
+    payload: Dict[str, Any] = {"cube_query": cube_query}
     if integration_id:
         payload["integration_id"] = integration_id
 
     try:
         result = await make_api_request("query", payload)
         return result
+
     except httpx.HTTPStatusError as e:
-        # Try to extract the actual error message from the response
         error_detail = e.response.text
         try:
             error_json = json.loads(error_detail)
-            if "message" in error_json:
-                # Extract the actual error from nested message
-                msg = error_json["message"]
+            msg = error_json.get("message", "")
+            if msg:
                 if "Something went wrong:" in msg:
-                    # Extract just the error part
-                    cube_error = msg.split("Something went wrong:", 1)[1].strip()
-                    return {
-                        "error": cube_error if cube_error else f"Query failed with HTTP {e.response.status_code}",
-                        "status": "failed",
-                        "http_status": e.response.status_code,
-                        "cube_query": cube_query,
-                        "request_details": {
-                            "url": f"{API_BASE_URL}/v1/query",
-                            "payload": payload,
-                            "api_key_configured": bool(API_KEY),
-                            "timeout": "connect: 1s (with retry), read: 120s, total: 120s"
-                        }
-                    }
-                else:
-                    # If message is empty, provide a fallback error message
-                    error_msg = msg if msg else f"Query failed with HTTP {e.response.status_code}"
-                    return {
-                        "error": error_msg,
-                        "status": "failed",
-                        "http_status": e.response.status_code,
-                        "cube_query": cube_query,
-                        "request_details": {
-                            "url": f"{API_BASE_URL}/v1/query",
-                            "payload": payload,
-                            "api_key_configured": bool(API_KEY),
-                            "timeout": "connect: 1s (with retry), read: 120s, total: 120s"
-                        }
-                    }
+                    msg = msg.split("Something went wrong:", 1)[1].strip() or msg
+                return {
+                    "error": msg,
+                    "status": "failed",
+                    "http_status": e.response.status_code,
+                    "cube_query": cube_query,
+                    "request_details": _common_request_details("query", payload),
+                }
         except (json.JSONDecodeError, KeyError):
             pass
 
@@ -277,49 +327,32 @@ async def run_cube_query(
             "error": f"HTTP {e.response.status_code}: {error_detail}",
             "status": "failed",
             "cube_query": cube_query,
-            "request_details": {
-                "url": f"{API_BASE_URL}/v1/query",
-                "payload": payload,
-                "api_key_configured": bool(API_KEY),
-                "timeout": "connect: 30s, read: 120s, total: 120s"
-            }
+            "request_details": _common_request_details("query", payload),
         }
+
     except Exception as e:
-        error_msg = str(e)
-
-        # If empty message, provide more specific error based on exception type
-        if not error_msg:
-            if e.__class__.__module__ == 'httpx':
-                # Include the exception class name for httpx errors
-                error_msg = f"Query failed with {e.__class__.__name__}"
-            else:
-                error_msg = f"Query failed with {e.__class__.__name__}: unknown error"
-
-        # Build error response with additional context
-        error_response = {
-            "error": error_msg,
+        phase = _phase_for_exception(e)
+        msg = str(e) or f"Query failed with {e.__class__.__name__}"
+        return {
+            "error": msg,
             "status": "failed",
-            "cube_query": cube_query
+            "cube_query": cube_query,
+            "exception_type": f"{e.__class__.__module__}.{e.__class__.__name__}",
+            "request_details": {
+                **_common_request_details("query", payload),
+                "phase": phase,
+            },
         }
 
-        # Add exception type for debugging
-        error_response["exception_type"] = f"{e.__class__.__module__}.{e.__class__.__name__}"
-
-        # Add request details for debugging
-        error_response["request_details"] = {
-            "url": f"{API_BASE_URL}/v1/query",
-            "payload": payload,
-            "api_key_configured": bool(API_KEY),
-            "timeout": "connect: 30s, read: 120s, total: 120s"
-        }
-
-        return error_response
-
+# -------------------------
+# Entrypoint
+# -------------------------
 
 def main():
     """Entry point for the definite-mcp command"""
+    # Note: FastMCP is long-lived; we intentionally keep _HTTP open for reuse.
+    # If you add a shutdown hook in the future, call: await _HTTP.aclose()
     mcp.run()
-
 
 if __name__ == "__main__":
     main()
