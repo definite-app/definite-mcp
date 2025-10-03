@@ -300,6 +300,11 @@ async def run_cube_query(
     payload: Dict[str, Any] = {"cube_query": cube_query}
     if integration_id:
         payload["integration_id"] = integration_id
+    else:
+        # Fallback default integration id from env if present
+        _CUBE_INTEGRATION_ID = os.getenv("_CUBE_INTEGRATION_ID")
+        if _CUBE_INTEGRATION_ID:
+            payload["integration_id"] = _CUBE_INTEGRATION_ID
 
     try:
         result = await make_api_request("query", payload)
